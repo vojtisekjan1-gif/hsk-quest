@@ -1,0 +1,11 @@
+# Downloaded packages: npm ci reinstalls them
+node_modules/
+
+# Build output: GitHub Actions builds its own copy
+dist/
+
+# Personal Claude Code settings for this PC
+.claude/settings.local.json
+
+*.log
+*.bak
