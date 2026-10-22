@@ -34,13 +34,14 @@ describe("loadProgress", () => {
           xp: 40,
           cards: {},
           badges: [],
-          adventure: { hp: "oops", items: { shield: -1 }, defeated: "slime" },
+          adventure: { hp: "oops", items: { shield: -1 }, gold: -3, defeated: "slime" },
         }),
     });
     const progress = loadProgress();
     expect(progress.xp).toBe(40);
     expect(progress.adventure.hp).toBe(MAX_HP);
     expect(progress.adventure.items.shield).toBe(0);
+    expect(progress.adventure.gold).toBe(0);
     expect(progress.adventure.defeated).toEqual([]);
   });
 

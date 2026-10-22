@@ -1,16 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
-  HINT_REMOVES,
   MAX_HP,
-  MONSTERS,
   REST_HP,
+  SHOP_PRICES,
   answer,
+  answersNeeded,
+  buyItem,
+  canBuy,
   canUseItem,
-  choicesAfterHint,
   emptyAdventure,
   emptyItems,
-  makeQuestion,
+  hidesPinyin,
   nextQuestion,
+  practiceGold,
   randomItem,
   refreshDailyHp,
   refreshForDay,
@@ -20,9 +22,12 @@ import {
   useItem,
   type Items,
 } from "./adventure";
-import type { Word } from "./data/words";
+import { monsterById, type Monster } from "./world";
 
-const slime = MONSTERS[0];
+const slime = monsterById("slime")!;
+const tiger = monsterById("tiger")!; // a boss
+// A plain test monster with the given abilities, so each rule can be tested alone.
+const withAbilities = (...abilities: Monster["abilities"]): Monster => ({ ...slime, id: "test", hp: 5, abilities });
 const items = (overrides: Partial<Items> = {}): Items => ({ ...emptyItems(), ...overrides });
 
 // Answers correctly until the battle ends, moving to the next question each time.
@@ -120,7 +125,7 @@ describe("items", () => {
     expect(canUseItem(startBattle(slime, MAX_HP), items({ potion: 1 }), "potion")).toBe(false);
   });
 
-  it("the random reward is one of the three items", () => {
+  it("the random boss reward is one of the three items", () => {
     expect(randomItem(() => 0)).toBe("potion");
     expect(randomItem(() => 0.5)).toBe("hint");
     expect(randomItem(() => 0.99)).toBe("shield");
@@ -130,32 +135,126 @@ describe("items", () => {
 describe("rewards", () => {
   const fresh = emptyAdventure();
 
-  it("the first win gives XP and an item and marks the monster defeated", () => {
+  it("the first win gives XP and gold and marks the monster defeated", () => {
     const result = settleBattle(winBattle(), fresh, slime, () => 0);
     expect(result.xp).toBe(slime.xp);
+    expect(result.adv.gold).toBe(slime.gold);
     expect(result.adv.defeated).toEqual([slime.id]);
-    expect(result.adv.items.potion).toBe(1);
-  });
-
-  it("practice wins give no XP and no item", () => {
-    const beaten = { ...fresh, defeated: [slime.id] };
-    const result = settleBattle(winBattle(), beaten, slime, () => 0);
-    expect(result.xp).toBe(0);
     expect(result.adv.items).toEqual(emptyItems());
   });
 
-  it("a loss sends you to rest at REST_HP with no rewards", () => {
+  it("the first win against a boss also drops an item", () => {
+    let b = startBattle(tiger, MAX_HP);
+    while (!b.over) b = answer(nextQuestion(b), true);
+    const result = settleBattle(b, fresh, tiger, () => 0);
+    expect(result.xp).toBe(tiger.xp);
+    expect(result.adv.gold).toBe(tiger.gold);
+    expect(result.adv.items.potion).toBe(1);
+  });
+
+  it("practice wins give a little gold, no XP and no item", () => {
+    const beaten = { ...fresh, gold: 7, defeated: [slime.id] };
+    const result = settleBattle(winBattle(), beaten, slime, () => 0);
+    expect(result.xp).toBe(0);
+    expect(result.adv.gold).toBe(7 + practiceGold(slime));
+    expect(result.adv.items).toEqual(emptyItems());
+  });
+
+  it("practice gold is a fifth of the first-win gold, and at least 1", () => {
+    expect(practiceGold({ ...slime, gold: 50 })).toBe(10);
+    expect(practiceGold({ ...slime, gold: 2 })).toBe(1);
+  });
+
+  it("a loss sends you to rest at REST_HP with no rewards and keeps your gold", () => {
     const lost = { ...startBattle(slime, 1), playerHp: 0, over: "lose" as const };
-    const result = settleBattle(lost, fresh, slime);
+    const result = settleBattle(lost, { ...fresh, gold: 30 }, slime);
     expect(result.adv.hp).toBe(REST_HP);
+    expect(result.adv.gold).toBe(30);
     expect(result.xp).toBe(0);
     expect(result.adv.defeated).toEqual([]);
   });
 });
 
+describe("abilities", () => {
+  it("a monster without abilities hits for 1 and never heals", () => {
+    const hit = answer(startBattle(slime, MAX_HP), true);
+    const b = answer(nextQuestion(hit), false);
+    expect(b.playerHp).toBe(MAX_HP - 1);
+    expect(b.monsterHp).toBe(slime.hp - 1);
+    expect(hidesPinyin(b)).toBe(false);
+  });
+
+  it("a fierce monster takes 2 HP for a wrong answer", () => {
+    expect(answer(startBattle(withAbilities("fierce"), MAX_HP), false).playerHp).toBe(MAX_HP - 2);
+  });
+
+  it("a fierce hit can end the battle from 2 HP", () => {
+    expect(answer(startBattle(withAbilities("fierce"), 2), false).over).toBe("lose");
+  });
+
+  it("an armored monster absorbs only the first correct answer", () => {
+    const first = answer(startBattle(withAbilities("armored"), MAX_HP), true);
+    expect(first.monsterHp).toBe(5);
+    expect(first.armorUp).toBe(false);
+    expect(answer(nextQuestion(first), true).monsterHp).toBe(4);
+  });
+
+  it("a regenerating monster heals 1 when you miss, but not above its maximum", () => {
+    const hit = answer(startBattle(withAbilities("regen"), MAX_HP), true);
+    const missed = answer(nextQuestion(hit), false);
+    expect(missed.monsterHp).toBe(5);
+    expect(missed.playerHp).toBe(MAX_HP - 1);
+    expect(answer(nextQuestion(missed), false).monsterHp).toBe(5);
+  });
+
+  it("a shield blocks both the damage and the healing", () => {
+    const hit = answer(startBattle(withAbilities("fierce", "regen"), MAX_HP), true);
+    const shielded = useItem(nextQuestion(hit), items({ shield: 1 }), "shield").battle;
+    const blocked = answer(shielded, false);
+    expect(blocked.playerHp).toBe(MAX_HP);
+    expect(blocked.monsterHp).toBe(4);
+  });
+
+  it("an armored monster needs one more correct answer than its HP", () => {
+    expect(answersNeeded(withAbilities())).toBe(5);
+    expect(answersNeeded(withAbilities("armored"))).toBe(6);
+    let b = startBattle(withAbilities("armored"), MAX_HP);
+    let answers = 0;
+    while (!b.over) {
+      b = answer(nextQuestion(b), true);
+      answers++;
+    }
+    expect(answers).toBe(6);
+  });
+
+  it("a veiled monster hides the pinyin", () => {
+    expect(hidesPinyin(startBattle(withAbilities("veiled"), MAX_HP))).toBe(true);
+  });
+});
+
+describe("shop", () => {
+  it("buying spends gold and adds the item", () => {
+    const adv = { ...emptyAdventure(), gold: 20 };
+    const after = buyItem(adv, "potion");
+    expect(after.gold).toBe(20 - SHOP_PRICES.potion);
+    expect(after.items.potion).toBe(1);
+  });
+
+  it("buying without enough gold changes nothing", () => {
+    const adv = { ...emptyAdventure(), gold: SHOP_PRICES.hint - 1 };
+    expect(canBuy(adv, "hint")).toBe(false);
+    expect(buyItem(adv, "hint")).toBe(adv);
+  });
+
+  it("the exact price is enough", () => {
+    const adv = { ...emptyAdventure(), gold: SHOP_PRICES.shield };
+    expect(buyItem(adv, "shield").gold).toBe(0);
+  });
+});
+
 describe("saved data", () => {
   it("keeps valid data", () => {
-    const adv = { ...emptyAdventure(), hp: 12, hpDay: "2026-10-18", items: items({ shield: 2 }), defeated: ["slime"] };
+    const adv = { ...emptyAdventure(), hp: 12, hpDay: "2026-10-18", items: items({ shield: 2 }), gold: 42, defeated: ["slime"] };
     expect(sanitizeAdventure(adv)).toEqual(adv);
   });
 
@@ -168,6 +267,14 @@ describe("saved data", () => {
     expect(fixed.hp).toBe(MAX_HP);
     expect(fixed.items).toEqual(items({ shield: 1 }));
     expect(fixed.defeated).toEqual(["slime"]);
+  });
+
+  it("repairs saved gold", () => {
+    expect(sanitizeAdventure({}).gold).toBe(0);
+    expect(sanitizeAdventure({ gold: -5 }).gold).toBe(0);
+    expect(sanitizeAdventure({ gold: NaN }).gold).toBe(0);
+    expect(sanitizeAdventure({ gold: "rich" }).gold).toBe(0);
+    expect(sanitizeAdventure({ gold: 12.8 }).gold).toBe(12);
   });
 
   it("clamps HP to the valid range", () => {
@@ -205,55 +312,6 @@ describe("daily HP", () => {
     const adv = { ...emptyAdventure(), hp: 4, hpDay: "2026-10-17" };
     expect(refreshDailyHp(adv, "2026-10-17").hp).toBe(4);
     expect(refreshDailyHp(adv, "2026-10-18").hp).toBe(MAX_HP);
-  });
-});
-
-describe("questions", () => {
-  const word = (n: number, meaning: string): Word => ({
-    id: `test-${n}`,
-    hanzi: `字${n}`,
-    pinyin: "x",
-    meaning,
-    example: "x",
-    level: 4,
-  });
-
-  const meanings = (q: { choices: { meaning: string }[] }) => q.choices.map((c) => c.meaning);
-
-  it("includes the correct meaning exactly once with 4 options", () => {
-    const pool = [1, 2, 3, 4, 5].map((n) => word(n, `meaning ${n}`));
-    const q = makeQuestion(pool[0], pool);
-    expect(q.choices).toHaveLength(4);
-    expect(meanings(q).filter((m) => m === pool[0].meaning)).toHaveLength(1);
-    expect(new Set(meanings(q)).size).toBe(4);
-  });
-
-  it("never shows the same meaning twice, even when the pool repeats meanings", () => {
-    const pool = [word(1, "same"), word(2, "same"), word(3, "same"), word(4, "other"), word(5, "third")];
-    const q = makeQuestion(pool[0], pool);
-    expect(new Set(meanings(q)).size).toBe(q.choices.length);
-  });
-
-  it("a hint removes two wrong answers and keeps the correct one", () => {
-    const pool = [1, 2, 3, 4, 5].map((n) => word(n, `meaning ${n}`));
-    const q = makeQuestion(pool[0], pool);
-    const left = meanings({ choices: choicesAfterHint(q) });
-    expect(left).toHaveLength(q.choices.length - HINT_REMOVES);
-    expect(left).toContain(pool[0].meaning);
-  });
-
-  it("a hint never removes the correct answer, even with few options", () => {
-    const pool = [word(1, "right"), word(2, "wrong")];
-    const q = makeQuestion(pool[0], pool);
-    expect(meanings({ choices: choicesAfterHint(q) })).toEqual(["right"]);
-  });
-
-  it("gives each option the pinyin of the word it belongs to", () => {
-    const pool = [1, 2, 3, 4, 5].map((n) => ({ ...word(n, `meaning ${n}`), pinyin: `pin${n}` }));
-    for (const choice of makeQuestion(pool[0], pool).choices) {
-      const owner = pool.find((w) => w.meaning === choice.meaning);
-      expect(choice.pinyin).toBe(owner?.pinyin);
-    }
   });
 });
 
@@ -296,10 +354,6 @@ describe("extra rules", () => {
     expect(refreshDailyHp(emptyAdventure(), "2026-10-18").hpDay).toBe("2026-10-18");
   });
 
-  it("a word pool with fewer than four meanings gives fewer answer choices", () => {
-    const word: Word = { id: "test-1", hanzi: "字", pinyin: "x", meaning: "only", example: "x", level: 4 };
-    expect(makeQuestion(word, [word]).choices).toEqual([{ meaning: "only", pinyin: "x" }]);
-  });
 });
 
 describe("day change during a battle", () => {

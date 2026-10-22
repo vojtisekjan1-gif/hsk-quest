@@ -34,6 +34,10 @@ On Windows PowerShell, use `npm.cmd` if `npm` is blocked by the execution policy
 - `src/study.ts`: picks the words for a study session, HSK 5 only (pure, tested)
 - `src/storage.ts`: localStorage wrapper with schema version 1 and shape checks
 - `src/util.ts`: small shared helpers, such as `shuffle` (pure, tested)
+- `src/adventure.ts`: Adventure HP, items, abilities, gold, shop and battle rules (pure, tested)
+- `src/world.ts`: Adventure regions, monsters and unlock rules (pure, tested)
+- `src/questions.ts`: multiple-choice question types for battles and study (pure, tested)
+- `src/art.ts`: SVG art for monsters, the hero, items and map regions
 - `src/data/words.ts`: word types, retired ids, and `WORDS` (the generated list joined with the examples)
 - `src/data/words.generated.json`: all 1900 HSK 4 and 5 words with pinyin and meaning (generated, do not edit)
 - `src/data/examples.ts`: hand-written example sentences for HSK 5 words, keyed by id
@@ -44,11 +48,17 @@ On Windows PowerShell, use `npm.cmd` if `npm` is blocked by the execution policy
 - `.claude/agents/jarmil.md`: code-review subagent for this project
 
 ## Adventure mode
-An RPG mode that sits alongside the study screens, not replacing them. Rules are in `src/adventure.ts` and the SVG art is in `src/art.ts`.
+An RPG mode that sits alongside the study screens, not replacing them. Battle, item, gold and shop rules are in `src/adventure.ts`, the regions and monsters in `src/world.ts`, the question types in `src/questions.ts`, and the SVG art in `src/art.ts`.
+- World map: four regions (Bamboo Village and Misty Forest use HSK 4 words, Jade Mountains and Imperial Palace use HSK 5). Each has two monsters and a boss. A boss unlocks when the other two are beaten; the next region unlocks when the boss falls. A region where a monster was already beaten stays open, so older saves keep working.
+- Monster ids are saved in `defeated`. Never rename or reuse one (`slime`, `wolf` and `dragon` predate the map).
 - Combat: quiz battles. Correct answers damage a monster; wrong answers cost HP.
+- Abilities: fierce (a miss costs 2 HP), armored (absorbs the first hit), regen (heals 1 when you miss), veiled (answer options hide their pinyin). A shield blocks the whole miss, including regen.
+- Question types per region: meaning (hanzi → meaning), hanzi (meaning → hanzi), pinyin (pinyin → hanzi, options never show pinyin), blank (fill the gap in an HSK 5 example sentence). Wrong options never share the prompt or the answer with the right one.
 - HP: refills daily and on level-up.
+- Gold: the first win gives XP and gold, and a boss also drops a random item. Practice wins give a fifth of the gold. Losing costs no gold.
+- Shop: buys potions, hints and shields for gold.
 - Items: potions restore HP, hints remove two wrong answers, shields block one wrong answer.
-- Answer options show their word's pinyin (in battles and in study multiple choice).
+- Answer options show their word's pinyin (in battles and in study multiple choice), except in pinyin questions and against veiled monsters.
 - Graphics: hand-drawn SVG monsters, items and battle screen, drawn in code.
 - Keep combat, HP and item rules in pure modules with tests, like the existing logic.
 

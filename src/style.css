@@ -163,18 +163,50 @@ nav button.active { color: var(--accent); font-weight: 600; }
 .log { min-height: 1.5em; font-style: italic; color: var(--muted); }
 .reward { font-size: 1.1rem; font-weight: 600; }
 
-@media (max-width: 480px) {
-  .hero, .monster-card { flex-direction: column; text-align: center; }
-  .art { width: 80px; height: 80px; }
-  nav button { padding: 6px 2px; font-size: 0.75rem; }
-}
+.gold { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.gold svg, .price svg { width: 20px; height: 20px; }
+.price { display: inline-flex; align-items: center; gap: 2px; color: var(--muted); }
 
-@media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; }
+/* World map: four region stops in a row (two by two on narrow screens). */
+.map { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.map-stop {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 8px 4px; text-align: center; font-size: 0.85rem;
 }
+.map-stop svg { width: 40px; height: 40px; }
+.map-stop.selected { border: 2px solid var(--accent); background: var(--accent-soft); }
+.map-stop:disabled { opacity: 0.5; }
+.map-name { font-weight: 600; }
+.map-status { color: var(--muted); font-size: 0.75rem; }
 
+.tag {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.75rem;
+  font-weight: 600; background: var(--accent-soft); color: var(--accent); vertical-align: middle;
+}
+.tags { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+.abilities { margin: 4px 0 8px; padding-left: 18px; font-size: 0.9rem; }
+.monster-card.locked .art { filter: grayscale(1) brightness(0.4); }
+
+/* Battle prompts for the other question types */
+.prompt-pinyin { font-size: 2rem; margin: 16px 0 8px; }
+.prompt-meaning { font-size: 1.4rem; font-weight: 600; margin: 16px 0 8px; }
+.sentence { font-size: 1.5rem; margin: 16px 0 8px; }
+.gap { color: var(--accent); }
+
+/* Phones and other narrow screens (the layout must work at 375px). */
 @media (max-width: 480px) {
   .hanzi { font-size: 2.6rem; }
   .ratings { grid-template-columns: repeat(2, 1fr); }
   .xpbar { width: 80px; }
+  nav button { padding: 6px 2px; font-size: 0.75rem; }
+  .hero, .monster-card { flex-direction: column; text-align: center; }
+  .art { width: 80px; height: 80px; }
+  .map { grid-template-columns: repeat(2, 1fr); }
+  .abilities { text-align: left; }
+  .gold { justify-content: center; }
+  .sentence { font-size: 1.25rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
 }

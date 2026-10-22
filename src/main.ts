@@ -17,24 +17,48 @@ import {
   ITEM_IDS,
   ITEM_NAMES,
   MAX_HP,
-  MONSTERS,
   REST_HP,
+  SHOP_PRICES,
   answer,
+  answersNeeded,
+  buyItem,
+  canBuy,
   canUseItem,
-  choicesAfterHint,
-  makeQuestion,
+  hidesPinyin,
   nextQuestion,
+  practiceGold,
   refreshForDay,
   settleBattle,
   startBattle as beginBattle,
   useItem as applyItem,
   type Battle,
-  type Choice,
   type ItemId,
-  type Monster,
-  type Question,
 } from "./adventure";
-import { heroSvg, itemSvg, monsterSvg } from "./art";
+import {
+  ABILITIES,
+  REGIONS,
+  isMonsterUnlocked,
+  isRegionUnlocked,
+  latestUnlockedRegion,
+  monsterById,
+  regionById,
+  regionMonsters,
+  regionOf,
+  unlockMessages,
+  type Monster,
+  type Region,
+} from "./world";
+import {
+  BLANK,
+  choicesAfterHint,
+  isCorrect,
+  makeQuestion,
+  pickQuestionType,
+  type Choice,
+  type Question,
+  type QuestionType,
+} from "./questions";
+import { coinSvg, heroSvg, itemSvg, monsterSvg, regionSvg } from "./art";
 import { shuffle } from "./util";
 
 type View = "home" | "study" | "adventure" | "words" | "achievements" | "settings";
@@ -51,7 +75,7 @@ let revealed = false;
 let sessionStreak = 0;
 let sessionXp = 0;
 let mcChoices: Choice[] = [];
-let mcAnswered: string | null = null;
+let mcAnswered: string | null = null; // word id of the chosen option
 let celebrate: string | null = null;
 
 // Adventure battle state (kept in memory; HP and items are saved as they change).
@@ -60,8 +84,9 @@ let battle: Battle | null = null;
 let battlePool: Word[] = [];
 let battleIndex = 0;
 let question: Question | null = null;
-let battleChoice: string | null = null; // the option the player picked for this question
+let battleChoice: string | null = null; // word id of the option the player picked for this question
 let battleReward: string | null = null;
+let mapRegion: Region | null = null; // the region open on the map; null means the latest unlocked one
 
 // Makes sure HP is restored once per calendar day, even if the tab stayed open overnight.
 function refreshAdventure(): void {
@@ -182,7 +207,7 @@ function isMultipleChoice(): boolean {
 function prepareChoices(): void {
   const word = queue[index];
   if (!word || !isMultipleChoice()) return;
-  mcChoices = makeQuestion(word, WORDS.filter((w) => w.level === word.level)).choices;
+  mcChoices = makeQuestion("meaning", word, WORDS.filter((w) => w.level === word.level)).choices;
   mcAnswered = null;
 }
 
@@ -197,11 +222,11 @@ function rate(rating: Rating): void {
   afterAnswer();
 }
 
-function answerChoice(choice: string): void {
+function answerChoice(wordId: string): void {
   if (mcAnswered) return;
   const word = queue[index];
-  mcAnswered = choice;
-  const correct = choice === word.meaning;
+  mcAnswered = wordId;
+  const correct = wordId === word.id;
   const rating: Rating = correct ? "good" : "again";
   progress.cards[word.id] = review(cardStateFor(word), rating, Date.now());
   const gained = xpForAnswer(correct, sessionStreak);
@@ -237,8 +262,8 @@ function finishSession(): void {
 
 function fight(monster: Monster): void {
   refreshAdventure();
-  if (progress.adventure.hp <= 0) return;
-  const pool = shuffle(WORDS.filter((w) => w.level === monster.level));
+  if (progress.adventure.hp <= 0 || !isMonsterUnlocked(monster, progress.adventure.defeated)) return;
+  const pool = shuffle(WORDS.filter((w) => w.level === regionOf(monster).level));
   // A battle needs at least four different meanings for the answer choices.
   const distinctMeanings = new Set(pool.map((w) => w.meaning)).size;
   if (distinctMeanings < 4) {
@@ -252,24 +277,30 @@ function fight(monster: Monster): void {
   battleIndex = 0;
   battleChoice = null;
   battleReward = null;
-  question = makeQuestion(battlePool[0], battlePool);
+  question = battleQuestion(monster, battlePool[0]);
   render();
+}
+
+// A question of one of the kinds the monster's region asks.
+function battleQuestion(monster: Monster, word: Word): Question {
+  const type = pickQuestionType(regionOf(monster).questionTypes, word);
+  return makeQuestion(type, word, battlePool);
 }
 
 function nextBattleQuestion(): void {
-  if (!battle) return;
+  if (!battle || !battleMonster) return;
   battle = nextQuestion(battle);
   battleChoice = null;
   battleIndex = (battleIndex + 1) % battlePool.length;
-  question = makeQuestion(battlePool[battleIndex], battlePool);
+  question = battleQuestion(battleMonster, battlePool[battleIndex]);
   render();
 }
 
-function answerBattle(choice: string): void {
+function answerBattle(wordId: string): void {
   refreshAdventure();
   if (!battle || !battleMonster || !question || battle.over || battle.answered) return;
-  const correct = choice === question.word.meaning;
-  battleChoice = choice;
+  const correct = isCorrect(question, wordId);
+  battleChoice = wordId;
   battle = answer(battle, correct);
   progress.adventure.hp = battle.playerHp;
   // Announce the hit first, so the victory or defeat message is added after it.
@@ -282,11 +313,15 @@ function answerBattle(choice: string): void {
 // Hands the battle result to the rules module, then applies XP and saves.
 function finishBattle(): void {
   if (!battle || !battleMonster) return;
+  const before = progress.adventure.defeated;
   const result = settleBattle(battle, progress.adventure, battleMonster);
   progress.adventure = result.adv;
   battleReward = result.reward;
   announce(result.reward);
   addXp(result.xp); // may add "Level N reached!" after the reward
+  const unlocked = unlockMessages(before, result.adv.defeated);
+  for (const message of unlocked) showToast(message);
+  if (unlocked.length > 0) mapRegion = null; // the map opens on the newest region
   persist();
 }
 
@@ -299,6 +334,22 @@ function useItem(id: ItemId): void {
   progress.adventure = { ...progress.adventure, items: result.items, hp: battle.playerHp };
   persist();
   announce(battle.log);
+  render();
+}
+
+function buy(id: ItemId): void {
+  const after = buyItem(progress.adventure, id);
+  if (after === progress.adventure) return;
+  progress.adventure = after;
+  persist();
+  announce(`Bought a ${ITEM_NAMES[id]}. ${after.gold} gold left.`);
+  render();
+}
+
+function openRegion(id: string): void {
+  const region = regionById(id);
+  if (!region || !isRegionUnlocked(region, progress.adventure.defeated)) return;
+  mapRegion = region;
   render();
 }
 
@@ -328,6 +379,7 @@ function clearSessionState(): void {
   question = null;
   battleChoice = null;
   battleReward = null;
+  mapRegion = null;
 }
 
 function setView(v: View): void {
@@ -393,9 +445,11 @@ function exampleBlock(word: Word): string {
   return `<p class="example">${esc(word.example)}</p>${translation}`;
 }
 
-// An answer option's text: the meaning, with its word's pinyin on a second line.
-function choiceLabel(choice: Choice): string {
-  return `${esc(choice.meaning)}<span class="choice-pinyin">${esc(choice.pinyin)}</span>`;
+// An answer option's text, with its word's pinyin on a second line when there is one.
+// showPinyin is false against a veiled monster.
+function choiceLabel(choice: Choice, showPinyin = true): string {
+  const sub = showPinyin && choice.sub ? `<span class="choice-pinyin">${esc(choice.sub)}</span>` : "";
+  return `${esc(choice.label)}${sub}`;
 }
 
 function studyView(): string {
@@ -411,10 +465,10 @@ function studyView(): string {
       .map((choice) => {
         let cls = "";
         if (mcAnswered) {
-          if (choice.meaning === word.meaning) cls = "correct";
-          else if (choice.meaning === mcAnswered) cls = "wrong";
+          if (choice.wordId === word.id) cls = "correct";
+          else if (choice.wordId === mcAnswered) cls = "wrong";
         }
-        return `<button class="choice ${cls}" data-action="choose" data-value="${esc(choice.meaning)}" ${mcAnswered ? "disabled" : ""}>${choiceLabel(choice)}</button>`;
+        return `<button class="choice ${cls}" data-action="choose" data-value="${esc(choice.wordId)}" ${mcAnswered ? "disabled" : ""}>${choiceLabel(choice)}</button>`;
       })
       .join("");
     return `
@@ -474,19 +528,8 @@ function adventureView(): string {
   if (battleMonster && battle) return battleView(battleMonster, battle);
 
   const adv = progress.adventure;
+  const region = mapRegion ?? latestUnlockedRegion(adv.defeated);
   const heroPct = Math.round((adv.hp / MAX_HP) * 100);
-  const monsters = MONSTERS.map((m) => {
-    const beaten = adv.defeated.includes(m.id);
-    return `
-      <section class="card monster-card">
-        <div class="art">${monsterSvg(m.id)}</div>
-        <div class="monster-info">
-          <h3>${esc(m.name)}${beaten ? " ✔" : ""}</h3>
-          <p class="muted">HSK ${m.level} words · ${m.hp} correct answers to win · ${beaten ? "rewards claimed" : `+${m.xp} XP on first win`}</p>
-          <button class="primary" data-action="fight" data-id="${m.id}" ${adv.hp <= 0 ? "disabled" : ""}>${beaten ? "Practice fight" : "Fight"}</button>
-        </div>
-      </section>`;
-  }).join("");
 
   return `
     <section class="card hero">
@@ -495,14 +538,114 @@ function adventureView(): string {
         <h2>Your hero</h2>
         <p>HP ${adv.hp} / ${MAX_HP}</p>
         ${hpBar(heroPct)}
+        <p class="gold">${coinSvg()}<span>${adv.gold} gold</span></p>
         <p class="muted">HP refills each day. After a defeat you rest at ${REST_HP} HP.</p>
       </div>
     </section>
+    ${mapView(region)}
+    ${regionMonsters(region).map(monsterCard).join("")}
     <section class="card">
       <h2>Items</h2>
       ${itemsRow(false)}
     </section>
-    ${monsters}`;
+    ${shopView()}`;
+}
+
+// What each kind of question asks, for the region description and the battle screen.
+const QUESTION_KINDS: Record<QuestionType, { short: string; ask: string }> = {
+  meaning: { short: "hanzi → meaning", ask: "What does this mean?" },
+  hanzi: { short: "meaning → hanzi", ask: "Which word means this?" },
+  pinyin: { short: "pinyin → hanzi", ask: "Which word is this?" },
+  blank: { short: "fill the gap", ask: "Which word fills the gap?" },
+};
+
+// The row of regions. Locked regions say which boss opens them.
+function mapView(current: Region): string {
+  const defeated = progress.adventure.defeated;
+  const stops = REGIONS.map((r, i) => {
+    const open = isRegionUnlocked(r, defeated);
+    const status = open || i === 0 ? `HSK ${r.level}` : `🔒 Beat the ${monsterById(REGIONS[i - 1].bossId)!.name}`;
+    return `
+      <button class="map-stop${r === current ? " selected" : ""}" data-action="region" data-id="${r.id}"
+        aria-pressed="${r === current}" ${open ? "" : "disabled"}>
+        ${regionSvg(r.id)}
+        <span class="map-name">${esc(r.name)}</span>
+        <span class="map-status">${esc(status)}</span>
+      </button>`;
+  }).join("");
+  const kinds = current.questionTypes.map((t) => QUESTION_KINDS[t].short).join(", ");
+  return `
+    <section class="card">
+      <h2>World map</h2>
+      <div class="map">${stops}</div>
+      <p class="muted">${esc(current.name)}: HSK ${current.level} words · ${esc(kinds)}</p>
+    </section>`;
+}
+
+function abilityList(m: Monster): string {
+  if (m.abilities.length === 0) return "";
+  const items = m.abilities
+    .map((a) => `<li><strong>${ABILITIES[a].name}</strong>: ${ABILITIES[a].description}</li>`)
+    .join("");
+  return `<ul class="abilities">${items}</ul>`;
+}
+
+function monsterCard(m: Monster): string {
+  const adv = progress.adventure;
+  const beaten = adv.defeated.includes(m.id);
+  const open = isMonsterUnlocked(m, adv.defeated);
+  const reward = beaten
+    ? `rewards claimed · +${practiceGold(m)} gold per practice win`
+    : `+${m.xp} XP and +${m.gold} gold on first win${m.boss ? ", plus an item" : ""}`;
+  const button = open
+    ? `<button class="primary" data-action="fight" data-id="${m.id}" ${adv.hp <= 0 ? "disabled" : ""}>${beaten ? "Practice fight" : "Fight"}</button>`
+    : `<p class="muted">🔒 Beat the other monsters here first.</p>`;
+  return `
+    <section class="card monster-card${open ? "" : " locked"}">
+      <div class="art">${monsterSvg(m.id)}</div>
+      <div class="monster-info">
+        <h3>${esc(m.name)}${beaten ? " ✔" : ""}${m.boss ? ` <span class="tag">Boss</span>` : ""}</h3>
+        <p class="muted">${answersNeeded(m)} correct answers to win · ${reward}</p>
+        ${abilityList(m)}
+        ${button}
+      </div>
+    </section>`;
+}
+
+function shopView(): string {
+  const adv = progress.adventure;
+  const buttons = ITEM_IDS.map((id) => {
+    const price = SHOP_PRICES[id];
+    return `<button class="item-chip" data-action="buy" data-item="${id}" aria-label="Buy a ${ITEM_NAMES[id]} for ${price} gold" ${canBuy(adv, id) ? "" : "disabled"}>
+      ${itemSvg(id)}<span>${ITEM_NAMES[id]}</span><span class="price">${coinSvg()}${price}</span>
+    </button>`;
+  }).join("");
+  return `
+    <section class="card">
+      <h2>Shop</h2>
+      <p class="muted">You have ${adv.gold} gold. Win battles to earn more.</p>
+      <div class="items">${buttons}</div>
+    </section>`;
+}
+
+// The example sentence with a gap. After answering, the word fills the gap
+// and the translation appears, so the sentence can be read in full.
+function blankSentence(q: Question, answered: boolean): string {
+  const [before, after = ""] = q.prompt.split(BLANK);
+  const gap = answered
+    ? `<strong class="gap">${esc(q.word.hanzi)}</strong>`
+    : `<span class="gap"><span aria-hidden="true">${BLANK}</span><span class="sr-only">blank</span></span>`;
+  const translation = answered && q.word.exampleMeaning ? `<p class="muted">${esc(q.word.exampleMeaning)}</p>` : "";
+  return `<p class="sentence">${esc(before)}${gap}${esc(after)}</p>${translation}`;
+}
+
+// What the question shows above its options.
+function questionPrompt(q: Question, answered: boolean): string {
+  const ask = `<p class="muted">${QUESTION_KINDS[q.type].ask}</p>`;
+  if (q.type === "meaning") return `<div class="hanzi">${esc(q.prompt)}</div>${ask}`;
+  if (q.type === "pinyin") return `<div class="prompt-pinyin">${esc(q.prompt)}</div>${ask}`;
+  if (q.type === "hanzi") return `<div class="prompt-meaning">${esc(q.prompt)}</div>${ask}`;
+  return `${blankSentence(q, answered)}${ask}`;
 }
 
 function battleView(m: Monster, b: Battle): string {
@@ -514,33 +657,35 @@ function battleView(m: Monster, b: Battle): string {
   } else if (question) {
     const current = question;
     const shown = b.hintShown ? choicesAfterHint(current) : current.choices;
+    const showPinyin = !hidesPinyin(b);
     const options = shown
       .map((choice) => {
         let cls = "";
         if (b.answered) {
-          if (choice.meaning === current.word.meaning) cls = "correct";
-          else if (choice.meaning === battleChoice) cls = "wrong";
+          if (isCorrect(current, choice.wordId)) cls = "correct";
+          else if (choice.wordId === battleChoice) cls = "wrong";
         }
-        return `<button class="choice ${cls}" data-action="battle-choose" data-value="${esc(choice.meaning)}" ${b.answered ? "disabled" : ""}>${choiceLabel(choice)}</button>`;
+        return `<button class="choice ${cls}" data-action="battle-choose" data-value="${esc(choice.wordId)}" ${b.answered ? "disabled" : ""}>${choiceLabel(choice, showPinyin)}</button>`;
       })
       .join("");
     body = `
-      <div class="hanzi">${esc(current.word.hanzi)}</div>
-      <p class="muted">What does this mean?</p>
+      ${questionPrompt(current, b.answered)}
       <div class="choices">${options}</div>
       ${b.answered ? `<button class="primary" data-action="battle-next">Next question</button>` : ""}`;
   } else {
     body = "";
   }
 
+  const tags = m.abilities.map((a) => `<span class="tag">${ABILITIES[a].name}</span>`).join("");
   return `
     <section class="card battle">
       <div class="fighters">
         <div class="fighter">
           <div class="art">${monsterSvg(m.id)}</div>
           <strong>${esc(m.name)}</strong>
-          ${hpBar(Math.round((b.monsterHp / m.hp) * 100), true)}
-          <span class="muted">${b.monsterHp} / ${m.hp} left</span>
+          ${tags ? `<div class="tags">${tags}</div>` : ""}
+          ${hpBar(Math.round((b.monsterHp / b.monsterMaxHp) * 100), true)}
+          <span class="muted">${b.monsterHp} / ${b.monsterMaxHp} left${b.armorUp ? " · armored" : ""}</span>
         </div>
         <div class="fighter">
           <div class="art">${heroSvg()}</div>
@@ -673,10 +818,16 @@ app.addEventListener("click", (event) => {
       afterAnswer();
       break;
     case "fight": {
-      const monster = MONSTERS.find((m) => m.id === target.dataset.id);
+      const monster = monsterById(target.dataset.id!);
       if (monster) fight(monster);
       break;
     }
+    case "region":
+      openRegion(target.dataset.id!);
+      break;
+    case "buy":
+      buy(target.dataset.item as ItemId);
+      break;
     case "battle-choose":
       answerBattle(target.dataset.value!);
       break;
